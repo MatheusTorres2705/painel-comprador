@@ -1,3 +1,4 @@
+// src/pages/PedidosPage.tsx
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
@@ -13,8 +14,21 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   MoreHorizontal, ExternalLink, Printer, Mail, CalendarDays, X,
-  Clock, AlertTriangle, CheckCircle2
+  Clock, AlertTriangle, CheckCircle2, Settings
 } from "lucide-react";
+
+type StatusPedCode = "1"|"2"|"3"|"4"|"5"|"6"|"7"|"8"|"9";
+const STATUSPED_LABEL: Record<StatusPedCode, string> = {
+  "1": "Pedido em aprovação",
+  "2": "Em Produção",
+  "3": "Aguardando embarque",
+  "4": "Em Trânsito",
+  "5": "Aguardando Liberação",
+  "6": "Desembaraçado",
+  "7": "Recebido",
+  "8": "Perdimento/Avaria",
+  "9": "Cancelado",
+};
 
 type Pedido = {
   nunota: number;
@@ -24,9 +38,39 @@ type Pedido = {
   vlrnota: number;
   dtprevent: string | null;  // ISO ou dd/mm/aaaa
   status: "PLANEJADO" | "ATRASADO" | "SEM PREVISÃO" | string;
+  statusped?: string;
+  statuspedCode?: StatusPedCode;
+  statuslib?: string | null;      // NOVO: status da liberação
+  obsreprovado?: string | null;   // NOVO: observação do liberador (tooltip)
 };
 
 type StatusFilter = "ALL" | "SEM_PREV" | "ATRASADO" | "PLANEJADO";
+
+/* ===== helpers statusped ===== */
+function guessStatusPedCode(s: string | undefined | null): StatusPedCode | null {
+  const t = String(s || "").trim().toLowerCase();
+  if (!t) return null;
+  const entries = Object.entries(STATUSPED_LABEL) as [StatusPedCode,string][];
+  for (const [code, label] of entries) {
+    if (t === code || t === label.toLowerCase()) return code;
+  }
+  if (t.includes("aprova")) return "1";
+  if (t.includes("produ")) return "2";
+  if (t.includes("embar")) return "3";
+  if (t.includes("trâns") || t.includes("transit")) return "4";
+  if (t.includes("libera")) return "5";
+  if (t.includes("desemb")) return "6";
+  if (t.includes("receb")) return "7";
+  if (t.includes("avaria") || t.includes("perdiment")) return "8";
+  if (t.includes("cancel")) return "9";
+  return null;
+}
+
+/* ===== normalizador do status de liberação ===== */
+function normalizeLib(s?: string | null) {
+  const t = String(s ?? "").trim();
+  return t || "(Sem status)";
+}
 
 export default function PedidosPage() {
   const navigate = useNavigate();
@@ -42,15 +86,36 @@ export default function PedidosPage() {
   const [ini, setIni] = React.useState<string>("");
   const [fim, setFim] = React.useState<string>("");
 
-  // Filtro por card (status)
+  // Filtros por cards/status geral
   const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("ALL");
+
+  // Filtro por statusped (código)
+  const [statusPedFilter, setStatusPedFilter] = React.useState<"ALL" | StatusPedCode>("ALL");
+
+  // NOVO: Filtro por status de liberação
+  const [statusLibFilter, setStatusLibFilter] = React.useState<string>("ALL");
+
+  // Opções dinâmicas do select de liberação (derivadas dos dados carregados)
+  const statusLibOptions = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const r of data) set.add(normalizeLib(r.statuslib));
+    return Array.from(set).sort((a,b) => a.localeCompare(b, "pt-BR"));
+  }, [data]);
 
   // Alterar previsão
   const [showPrev, setShowPrev] = React.useState(false);
   const [prevNunota, setPrevNunota] = React.useState<number | null>(null);
   const [prevDate, setPrevDate] = React.useState<string>(""); // yyyy-mm-dd
 
-  // ===== Helpers de datas e formato =====
+  // Atualizar status (DatasetSP.save / CabecalhoNota)
+  const [showUpd, setShowUpd] = React.useState(false);
+  const [updNunota, setUpdNunota] = React.useState<number | null>(null);
+  const [updStatus, setUpdStatus] = React.useState<StatusPedCode>("1");
+  const [updObs, setUpdObs] = React.useState<string>("");
+  const [updDate, setUpdDate] = React.useState<string>(""); // yyyy-mm-dd
+  const [updDebug, setUpdDebug] = React.useState<any>(null);
+
+  // ===== Helpers =====
   const toBR = (s: string) => (s ? s.split("-").reverse().join("/") : "");
 
   const toInputYYYYMMDD = (dt?: string | null) => {
@@ -89,12 +154,34 @@ export default function PedidosPage() {
       if (ini) qs.set("ini", toBR(ini));
       if (fim) qs.set("fim", toBR(fim));
 
-      const { data } = await api.get<{ items: Pedido[] }>(`/api/pedidos?${qs.toString()}`);
-      const items = (data.items || []).map(it => ({
-        ...it,
-        fornecedor: (it.fornecedor || "").trim(),
-        status: (it.status || "").trim(),
-      }));
+      const { data } = await api.get<{ items: any[] }>(`/api/pedidos?${qs.toString()}`);
+
+      const items: Pedido[] = (data.items || []).map((it: any) => {
+        const rawCode =
+          it.statuspedCode ??
+          it.statuspedcode ??
+          it.AD_STATUSPED ??
+          it.ad_statusped ??
+          null;
+
+        const inferred = guessStatusPedCode(it.statusped ?? it.STATUSPED);
+        const code: StatusPedCode = String(rawCode || inferred || "1") as StatusPedCode;
+
+        return {
+          nunota: Number(it.nunota ?? it.NUNOTA),
+          fornecedor: String(it.fornecedor ?? it.NOMEPARC ?? "").trim(),
+          vlrpedi: Number(it.vlrpedi ?? it.VLRPEDI ?? 0),
+          dtneg: it.dtneg ?? it.DTNEG_ISO ?? null,
+          vlrnota: Number(it.vlrnota ?? it.VLRNOTA ?? 0),
+          dtprevent: it.dtprevent ?? it.DTPREVENT_ISO ?? null,
+          status: String(it.status ?? it.STATUS ?? "").trim(),
+          statusped: String(it.statusped ?? it.STATUSPED ?? STATUSPED_LABEL[code]),
+          statuspedCode: code,
+          statuslib: it.statuslib ?? it.STATUSLIB ?? null,            // << NOVO
+          obsreprovado: it.obsreprovado ?? it.OBSREPROVADO ?? null,  // << NOVO
+        };
+      });
+
       setData(items);
     } catch (e: any) {
       setErr(e?.response?.data?.erro || "Falha ao buscar pedidos");
@@ -106,7 +193,7 @@ export default function PedidosPage() {
 
   React.useEffect(() => { fetchData(); }, []); // carga inicial
 
-  // ===== Ações do menu =====
+  // ===== Ações =====
   const openPedido = (nunota: number) => navigate(`/pedidos/${nunota}`);
 
   const printPedido = async (nunota: number) => {
@@ -139,6 +226,7 @@ export default function PedidosPage() {
     }
   };
 
+  // Alterar previsão
   const abrirAlterarPrevisao = (nunota: number, current: string | null) => {
     setPrevNunota(nunota);
     setPrevDate(toInputYYYYMMDD(current));
@@ -183,7 +271,79 @@ export default function PedidosPage() {
     }
   };
 
-  // ===== Totais (sempre baseados na lista completa) =====
+  // Atualizar status (DatasetSP.save / CabecalhoNota)
+  const abrirAtualizarStatus = (nunota: number, currentTxt: string | undefined | null) => {
+    setUpdNunota(nunota);
+    const code = guessStatusPedCode(currentTxt || "") || "1";
+    setUpdStatus(code);
+    setUpdObs("");
+    setUpdDate("");
+    setUpdDebug(null);
+    setShowUpd(true);
+    setActionMsg(null);
+  };
+
+  const salvarAtualizarStatus = async () => {
+    if (!updNunota) { setActionMsg("Pedido inválido."); return; }
+    setActingNunota(updNunota);
+    setActionMsg(null);
+    setUpdDebug(null);
+
+    const fields: string[] = ["AD_STATUSPED"];
+    const values: Record<string, any> = { "0": String(updStatus) };
+
+    if (updDate) {
+      fields.push("DTPREVENT");
+      values[String(fields.length - 1)] = toBR(updDate);
+    }
+    if (updObs && updObs.trim()) {
+      fields.push("OBSERVACAO");
+      values[String(fields.length - 1)] = updObs.toUpperCase();
+    }
+
+    const body = { entity: "CabecalhoNota", fields, pk: { NUNOTA: updNunota }, values };
+
+    try {
+      const { data: resp } = await api.post("/api/sankhya/dataset/save", body);
+      setUpdDebug(resp);
+
+      const ok =
+        String(resp?.STATUS ?? resp?.RETORNO?.status ?? "").trim() === "1" ||
+        String(resp?.RETORNO?.status ?? "").trim() === "1";
+
+      if (!ok) {
+        setActionMsg(`⚠️ Retorno inesperado ao atualizar status. Veja o JSON abaixo.`);
+      } else {
+        setData(old => old.map(row => {
+          if (row.nunota !== updNunota) return row;
+          const updated: Pedido = {
+            ...row,
+            statusped: STATUSPED_LABEL[updStatus],
+            statuspedCode: updStatus,
+          };
+          if (updDate) {
+            updated.dtprevent = updDate;
+            if (!row.status || row.status.toUpperCase() === "SEM PREVISÃO") {
+              updated.status = "PLANEJADO";
+            }
+          }
+          return updated;
+        }));
+        setShowUpd(false);
+        setUpdNunota(null);
+        setUpdDate("");
+        setUpdObs("");
+        setActionMsg(`✅ Status do pedido ${updNunota} atualizado para "${STATUSPED_LABEL[updStatus]}".`);
+      }
+    } catch (e: any) {
+      console.error("Atualizar status erro:", e?.response || e);
+      setActionMsg(e?.response?.data?.erro || `Falha ao atualizar status do pedido ${updNunota}.`);
+    } finally {
+      setActingNunota(null);
+    }
+  };
+
+  // ===== Totais =====
   const totSemPrev = React.useMemo(
     () => data.filter(r => !r.dtprevent || r.status?.toUpperCase() === "SEM PREVISÃO").length,
     [data]
@@ -197,24 +357,50 @@ export default function PedidosPage() {
     [data]
   );
 
-  // ===== Filtragem por card/status =====
+  const totPorStatusPed = React.useMemo(() => {
+    const map: Record<StatusPedCode, number> = { "1":0,"2":0,"3":0,"4":0,"5":0,"6":0,"7":0,"8":0,"9":0 };
+    for (const r of data) {
+      const code = (r.statuspedCode || guessStatusPedCode(r.statusped) || "1") as StatusPedCode;
+      map[code] += 1;
+    }
+    return map;
+  }, [data]);
+
+  // ===== Filtragem combinada =====
   const filteredData = React.useMemo(() => {
+    let base = data;
+
+    // 1) status geral (cards)
     switch (statusFilter) {
       case "SEM_PREV":
-        return data.filter(r => !r.dtprevent || r.status?.toUpperCase() === "SEM PREVISÃO" || r.status?.toUpperCase() === "SEM PREVISAO");
+        base = base.filter(r => !r.dtprevent || r.status?.toUpperCase() === "SEM PREVISÃO" || r.status?.toUpperCase() === "SEM PREVISAO");
+        break;
       case "ATRASADO":
-        return data.filter(r => r.status?.toUpperCase() === "ATRASADO");
+        base = base.filter(r => r.status?.toUpperCase() === "ATRASADO");
+        break;
       case "PLANEJADO":
-        return data.filter(r => r.status?.toUpperCase() === "PLANEJADO");
+        base = base.filter(r => r.status?.toUpperCase() === "PLANEJADO");
+        break;
       default:
-        return data;
+        break;
     }
-  }, [data, statusFilter]);
+
+    // 2) status do pedido (AD_STATUSPED)
+    if (statusPedFilter !== "ALL") {
+      base = base.filter(r => (r.statuspedCode || guessStatusPedCode(r.statusped) || "1") === statusPedFilter);
+    }
+
+    // 3) NOVO: status da liberação
+    if (statusLibFilter !== "ALL") {
+      base = base.filter(r => normalizeLib(r.statuslib) === statusLibFilter);
+    }
+
+    return base;
+  }, [data, statusFilter, statusPedFilter, statusLibFilter]);
 
   const toggleFilter = (next: StatusFilter) => {
     setStatusFilter(prev => (prev === next ? "ALL" : next));
   };
-
   const clearFilter = () => setStatusFilter("ALL");
 
   return (
@@ -237,6 +423,38 @@ export default function PedidosPage() {
             <label className="text-xs text-slate-600">Data Negociação (fim)</label>
             <Input type="date" value={fim} onChange={(e)=>setFim(e.target.value)} />
           </div>
+
+          {/* Filtro por Status do Pedido (AD_STATUSPED) */}
+          <div className="space-y-1">
+            <label className="text-xs text-slate-600">Status do Pedido</label>
+            <select
+              className="border rounded-md px-2 py-2 text-sm w-64"
+              value={statusPedFilter}
+              onChange={(e)=>setStatusPedFilter(e.target.value as any)}
+            >
+              <option value="ALL">Todos</option>
+              {Object.entries(STATUSPED_LABEL).map(([k, lbl]) => (
+                <option key={k} value={k}>{k} — {lbl}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* NOVO: Filtro por Status da Liberação */}
+          <div className="space-y-1">
+            <label className="text-xs text-slate-600">Status da Liberação</label>
+            <select
+              className="border rounded-md px-2 py-2 text-sm w-64"
+              value={statusLibFilter}
+              onChange={(e)=>setStatusLibFilter(e.target.value)}
+              disabled={statusLibOptions.length === 0}
+            >
+              <option value="ALL">Todos</option>
+              {statusLibOptions.map((opt) => (
+                <option key={opt} value={opt}>{opt}</option>
+              ))}
+            </select>
+          </div>
+
           <Button onClick={fetchData} disabled={loading}>{loading ? "Carregando…" : "Aplicar"}</Button>
           {err && <span className="text-sm text-red-600">{err}</span>}
           {actionMsg && <span className="text-sm text-slate-700">{actionMsg}</span>}
@@ -270,6 +488,14 @@ export default function PedidosPage() {
           onClick={() => toggleFilter("PLANEJADO")}
         />
 
+        {/* Totais por statusped (informativo) */}
+        <div className="ml-auto text-xs text-slate-600 self-end">
+          <span className="mr-3">Status do Pedido: </span>
+          {Object.entries(STATUSPED_LABEL).map(([k, lbl]) => (
+            <span key={k} className="mr-3">{lbl}: <b>{totPorStatusPed[k as StatusPedCode]}</b></span>
+          ))}
+        </div>
+
         {statusFilter !== "ALL" && (
           <div className="ml-auto">
             <Button variant="outline" onClick={clearFilter}>
@@ -300,6 +526,61 @@ export default function PedidosPage() {
         </Card>
       )}
 
+      {/* Modal Atualizar Status */}
+      {showUpd && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Atualizar status — Pedido {updNunota}</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1">
+              <label className="text-xs text-slate-600">Status</label>
+              <select
+                className="border rounded-md px-2 py-1 text-sm"
+                value={updStatus}
+                onChange={(e)=>setUpdStatus(e.target.value as StatusPedCode)}
+              >
+                {Object.entries(STATUSPED_LABEL).map(([k, lbl]) => (
+                  <option key={k} value={k}>{k} — {lbl}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-slate-600">Nova previsão (opcional)</label>
+              <Input type="date" value={updDate} onChange={(e)=>setUpdDate(e.target.value)} />
+            </div>
+            <div className="flex-1 min-w-[280px] space-y-1">
+              <label className="text-xs text-slate-600">Observação (opcional)</label>
+              <textarea
+                className="w-full border rounded-md px-2 py-1 text-sm"
+                rows={2}
+                value={updObs}
+                onChange={(e)=>setUpdObs(e.target.value)}
+                placeholder="Ex.: Pedido liberado pela fiscalização…"
+              />
+            </div>
+
+            <div className="ml-auto flex gap-2">
+              <Button onClick={salvarAtualizarStatus} disabled={actingNunota === updNunota}>
+                {actingNunota === updNunota ? "Salvando..." : "Salvar"}
+              </Button>
+              <Button variant="outline" onClick={()=>{ setShowUpd(false); setUpdNunota(null); }}>
+                <X className="mr-2 h-4 w-4" /> Cancelar
+              </Button>
+            </div>
+
+            {updDebug && (
+              <div className="basis-full mt-3">
+                <div className="text-xs text-slate-600 mb-1">Retorno do backend</div>
+                <pre className="text-xs bg-slate-50 p-3 rounded border overflow-auto max-h-64">
+{JSON.stringify(updDebug, null, 2)}
+                </pre>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Tabela */}
       <Card className="shadow-sm overflow-hidden">
         <CardContent className="p-0">
@@ -310,9 +591,11 @@ export default function PedidosPage() {
                 <th className="px-3 py-2 text-left">Fornecedor</th>
                 <th className="px-3 py-2 text-left">Valor Pedido</th>
                 <th className="px-3 py-2 text-left">Dt. Negociação</th>
-                <th className="px-3 py-2 text-left">Valor Nota</th>
                 <th className="px-3 py-2 text-left">Previsão</th>
                 <th className="px-3 py-2 text-left">Status</th>
+                {/* Coluna Liberação com tooltip de obsreprovado */}
+                <th className="px-3 py-2 text-left">Liberação</th>
+                <th className="px-3 py-2 text-left">Status Pedido</th>
                 <th className="px-3 py-2 text-right">Ações</th>
               </tr>
             </thead>
@@ -323,11 +606,22 @@ export default function PedidosPage() {
                   <td className="px-3 py-2">{r.fornecedor}</td>
                   <td className="px-3 py-2">{fmtMoney(r.vlrpedi)}</td>
                   <td className="px-3 py-2">{fmtDate(r.dtneg)}</td>
-                  <td className="px-3 py-2">{fmtMoney(r.vlrnota)}</td>
                   <td className="px-3 py-2">{fmtDate(r.dtprevent)}</td>
                   <td className="px-3 py-2">
                     <Badge variant={badgeVariant(r.status)}>{r.status || "—"}</Badge>
                   </td>
+
+                  {/* Célula de Liberação com tooltip nativo (obsreprovado) */}
+                  <td className="px-3 py-2">
+                    <span
+                      title={r.obsreprovado || ""}
+                      className="inline-block max-w-[220px] truncate align-middle"
+                    >
+                      {normalizeLib(r.statuslib)}
+                    </span>
+                  </td>
+
+                  <td className="px-3 py-2">{r.statusped || STATUSPED_LABEL["1"]}</td>
                   <td className="px-3 py-2 text-right">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -335,7 +629,7 @@ export default function PedidosPage() {
                           <MoreHorizontal className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-56">
+                      <DropdownMenuContent align="end" className="w-64">
                         <DropdownMenuItem onClick={() => openPedido(r.nunota)} className="cursor-pointer">
                           <ExternalLink className="mr-2 h-4 w-4" /> <span>Abrir pedido</span>
                         </DropdownMenuItem>
@@ -348,6 +642,9 @@ export default function PedidosPage() {
                         <DropdownMenuItem onClick={() => abrirAlterarPrevisao(r.nunota, r.dtprevent)} className="cursor-pointer">
                           <CalendarDays className="mr-2 h-4 w-4" /> <span>Alterar data de previsão</span>
                         </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => abrirAtualizarStatus(r.nunota, r.statusped)} className="cursor-pointer">
+                          <Settings className="mr-2 h-4 w-4" /> <span>Atualizar status</span>
+                        </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </td>
@@ -355,7 +652,7 @@ export default function PedidosPage() {
               ))}
               {!loading && filteredData.length === 0 && (
                 <tr className="border-t">
-                  <td className="px-3 py-6 text-center text-slate-500" colSpan={8}>Nenhum pedido encontrado.</td>
+                  <td className="px-3 py-6 text-center text-slate-500" colSpan={10}>Nenhum pedido encontrado.</td>
                 </tr>
               )}
             </tbody>

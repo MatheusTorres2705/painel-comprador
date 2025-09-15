@@ -18,7 +18,7 @@ type FornecedorCritico = {
 
 export default function ProdutosCriticosPage() {
   const nav = useNavigate();
-  const [dias, setDias] = React.useState<number>(5);
+  const [dias, setDias] = React.useState<number>(30);
   const [forn, setForn] = React.useState<string>("");
   const [data, setData] = React.useState<FornecedorCritico[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -50,7 +50,7 @@ export default function ProdutosCriticosPage() {
         </CardHeader>
         <CardContent className="flex flex-wrap items-end gap-3">
           <div className="space-y-1">
-            <label className="text-xs text-slate-600">Dias de atraso (DTMELHORPED ≤ hoje − dias)</label>
+            <label className="text-xs text-slate-600">Dias de atraso (Ruptura ≤ hoje − dias)</label>
             <Input type="number" min={0} value={dias} onChange={e=>setDias(Number(e.target.value || 0))} className="w-32" />
           </div>
           <div className="space-y-1">
