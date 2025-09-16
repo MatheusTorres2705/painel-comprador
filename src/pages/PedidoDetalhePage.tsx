@@ -1,3 +1,4 @@
+// src/pages/PedidoDetalhePage.tsx
 import React from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "@/lib/api";
@@ -13,6 +14,11 @@ type Header = {
   dtprevent: string | null; // ISO
   vlrnota: number;
   statusped?: string;       // texto do status do pedido
+
+  // novos campos (podem vir vazios do backend)
+  observacao?: string | null;  // OBSERVACAO
+  ad_invoice?: string | null;  // AD_INVOICE
+  ad_proforma?: string | null; // AD_PROFORMA
 };
 
 type Item = {
@@ -27,6 +33,7 @@ type Item = {
 };
 
 type Edited = Record<number, { qtd: number; vlrunit: number }>; // key = sequencia
+type EditedHeader = { OBSERVACAO?: string; AD_INVOICE?: string; AD_PROFORMA?: string };
 
 /* ===== Helpers ===== */
 const fmtMoney = (v: number) =>
@@ -58,10 +65,10 @@ export default function PedidoDetalhePage() {
   const [loading, setLoading] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
 
-  // follow-up (agora via DatasetSP.save)
+  // follow-up (via DatasetSP.save)
   const [showFollow, setShowFollow] = React.useState(false);
-  const [followText, setFollowText] = React.useState("");      // AD_OBSSTATUS
-  const [followDue, setFollowDue] = React.useState<string>(""); // yyyy-mm-dd → DTPREVENT
+  const [followText, setFollowText] = React.useState("");        // AD_OBSSTATUS
+  const [followDue, setFollowDue] = React.useState<string>("");  // yyyy-mm-dd → DTPREVENT
   const [followStatus, setFollowStatus] = React.useState<string>(""); // AD_STATUSPED
 
   // ações gerais
@@ -69,15 +76,24 @@ export default function PedidoDetalhePage() {
   const [acting, setActing] = React.useState(false);
 
   // edição de itens
-  const [edited, setEdited] = React.useState<Edited>({}); // mudanças locais
+  const [edited, setEdited] = React.useState<Edited>({}); // mudanças locais dos itens
+
+  // edição do CABEÇALHO (novos 3 campos)
+  const [editedHeader, setEditedHeader] = React.useState<EditedHeader>({});
 
   React.useEffect(() => {
     (async () => {
       if (!nunota) return;
       setLoading(true); setErr(null);
       try {
+        // OBS: garanta no backend /api/pedidos/:nunota retornar OBSERVACAO, AD_INVOICE, AD_PROFORMA
         const { data } = await api.get<{ header: Header; items: Item[] }>(`/api/pedidos/${nunota}`);
-        setHeader(data.header);
+        setHeader({
+          ...data.header,
+          observacao: data.header?.observacao ?? "",  // padroniza
+          ad_invoice: data.header?.ad_invoice ?? "",
+          ad_proforma: data.header?.ad_proforma ?? "",
+        });
         setItems((data.items || []).map(it => ({
           ...it,
           descrprod: (it.descrprod || "").trim(),
@@ -86,6 +102,7 @@ export default function PedidoDetalhePage() {
           qtd: Number(it.qtd ?? 0),
         })));
         setEdited({});
+        setEditedHeader({});
       } catch (e: any) {
         console.error("GET /api/pedidos/:nunota erro:", e?.response || e);
         setErr(e?.response?.data?.erro || "Falha ao carregar detalhe do pedido");
@@ -112,68 +129,62 @@ export default function PedidoDetalhePage() {
     }
   };
 
-  // ===== Cancelar (mantido para não quebrar o botão) =====
-  // ===== Cancelar pedido via DatasetSP.save (PENDENTE = 'N') =====
-const handleCancel = async () => {
-  if (!nunota) return;
+  // ===== Cancelar pedido (PENDENTE='N') =====
+  const handleCancel = async () => {
+    if (!nunota) return;
 
-  const ok = window.confirm(
-    `Confirma o cancelamento do pedido ${nunota}?\n` +
-    `Isso irá definir PENDENTE='N' e o pedido será considerado cancelado.`
-  );
-  if (!ok) return;
+    const ok = window.confirm(
+      `Confirma o cancelamento do pedido ${nunota}?\n` +
+      `Isso irá definir PENDENTE='N' e o pedido será considerado cancelado.`
+    );
+    if (!ok) return;
 
-  setActing(true);
-  setActionMsg(null);
+    setActing(true);
+    setActionMsg(null);
 
-  try {
-    const body = {
-      entity: "CabecalhoNota",
-      fields: ["PENDENTE"],          // apenas o campo que vamos alterar
-      pk: { NUNOTA: Number(nunota) },// PK do cabeçalho
-      values: { "0": "N" },          // índice 0 -> "PENDENTE"
-    };
+    try {
+      const body = {
+        entity: "CabecalhoNota",
+        fields: ["PENDENTE"],
+        pk: { NUNOTA: Number(nunota) },
+        values: { "0": "N" },
+      };
 
-    const { data } = await api.post("/api/sankhya/dataset/save", body);
-    const status = String(data?.RETORNO?.status ?? data?.STATUS ?? "0");
-    if (status !== "1") {
-      throw new Error(data?.RETORNO?.statusMessage || "Falha ao cancelar o pedido.");
+      const { data } = await api.post("/api/sankhya/dataset/save", body);
+      const status = String(data?.RETORNO?.status ?? data?.STATUS ?? "0");
+      if (status !== "1") {
+        throw new Error(data?.RETORNO?.statusMessage || "Falha ao cancelar o pedido.");
+      }
+
+      setActionMsg("✅ Pedido cancelado com sucesso (PENDENTE='N').");
+      setHeader(prev => prev ? { ...prev, statusped: "Cancelado" } : prev);
+    } catch (e: any) {
+      console.error("Cancelar pedido (DatasetSP.save) erro:", e?.response || e);
+      setActionMsg(e?.response?.data?.erro || e?.message || "Falha ao cancelar o pedido.");
+    } finally {
+      setActing(false);
     }
-
-    // feedback e pequenos ajustes visuais locais
-    setActionMsg("✅ Pedido cancelado com sucesso (PENDENTE='N').");
-    setHeader(prev => prev ? { ...prev, statusped: "Cancelado" } : prev);
-  } catch (e: any) {
-    console.error("Cancelar pedido (DatasetSP.save) erro:", e?.response || e);
-    setActionMsg(e?.response?.data?.erro || e?.message || "Falha ao cancelar o pedido.");
-  } finally {
-    setActing(false);
-  }
-};
-
+  };
 
   // ===== Follow-up → DatasetSP.save (AD_STATUSPED, AD_OBSSTATUS, DTPREVENT) =====
   const handleFollowSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!nunota) return;
 
-    // monta fields/values apenas com o que foi preenchido
     const fields: string[] = [];
     const values: Record<string, string> = {};
 
-    if (followStatus) {
-      fields.push("AD_STATUSPED");
-      values[String(fields.length - 1)] = followStatus; // índice 0 (ou o atual)
-    }
-    if (followText.trim()) {
-      fields.push("AD_OBSSTATUS");
-      values[String(fields.length - 1)] = followText.trim();
-    }
+    const push = (field: string, val: string) => {
+      const idx = fields.length;
+      fields.push(field);
+      values[String(idx)] = val;
+    };
+
+    if (followStatus) push("AD_STATUSPED", followStatus);
+    if (followText.trim()) push("AD_OBSSTATUS", followText.trim());
     if (followDue) {
-      // yyyy-mm-dd -> dd/mm/yyyy
       const toBR = (s: string) => (s ? s.split("-").reverse().join("/") : "");
-      fields.push("DTPREVENT");
-      values[String(fields.length - 1)] = toBR(followDue);
+      push("DTPREVENT", toBR(followDue));
     }
 
     if (fields.length === 0) {
@@ -201,10 +212,7 @@ const handleCancel = async () => {
         if (!prev) return prev;
         let next: Header = { ...prev };
         if (followStatus) next.statusped = statusMap[followStatus] || followStatus;
-        if (followDue) {
-          // guardar em ISO simples (YYYY-MM-DD) para exibir no cabeçalho
-          next.dtprevent = `${followDue}`; // o fmtDate lida bem com ISO básico
-        }
+        if (followDue) next.dtprevent = `${followDue}`;
         return next;
       });
 
@@ -314,6 +322,87 @@ const handleCancel = async () => {
     }
   };
 
+  // ===== Edição do CABEÇALHO (3 campos) =====
+  const hasHeaderEdits = React.useMemo(
+    () => Object.keys(editedHeader).length > 0,
+    [editedHeader]
+  );
+
+  const onHeaderChange = (field: keyof EditedHeader, value: string) => {
+    setEditedHeader(prev => {
+      const next = { ...prev, [field]: value };
+      // remove se voltar ao valor original para não enviar desnecessário
+      const original =
+        field === "OBSERVACAO" ? (header?.observacao ?? "") :
+        field === "AD_INVOICE" ? (header?.ad_invoice ?? "") :
+        field === "AD_PROFORMA" ? (header?.ad_proforma ?? "") : "";
+
+      if (value === original) {
+        delete next[field];
+      }
+      return next;
+    });
+  };
+
+  const confirmHeaderSave = async () => {
+    if (!nunota || !hasHeaderEdits) return;
+
+    const ok = window.confirm(
+      "Confirmar alterações de cabeçalho? O pedido poderá seguir para liberação novamente."
+    );
+    if (!ok) return;
+
+    const fields: string[] = [];
+    const values: Record<string, string> = {};
+    const push = (f: string, v: string) => {
+      const idx = fields.length;
+      fields.push(f);
+      values[String(idx)] = v;
+    };
+
+    if (editedHeader.OBSERVACAO != null)
+      push("OBSERVACAO", String(editedHeader.OBSERVACAO));
+    if (editedHeader.AD_INVOICE != null)
+      push("AD_INVOICE", String(editedHeader.AD_INVOICE));
+    if (editedHeader.AD_PROFORMA != null)
+      push("AD_PROFORMA", String(editedHeader.AD_PROFORMA));
+
+    if (fields.length === 0) return;
+
+    setActing(true); setActionMsg(null);
+    try {
+      const body = {
+        entity: "CabecalhoNota",
+        fields,
+        pk: { NUNOTA: Number(nunota) },
+        values,
+      };
+
+      const { data } = await api.post("/api/sankhya/dataset/save", body);
+      const ok = String(data?.RETORNO?.status ?? data?.STATUS ?? "0") === "1";
+      if (!ok) {
+        throw new Error(data?.RETORNO?.statusMessage || "Falha ao atualizar cabeçalho.");
+      }
+
+      // Reflete na UI
+      setHeader(prev => prev ? {
+        ...prev,
+        observacao: editedHeader.OBSERVACAO ?? prev.observacao,
+        ad_invoice: editedHeader.AD_INVOICE ?? prev.ad_invoice,
+        ad_proforma: editedHeader.AD_PROFORMA ?? prev.ad_proforma,
+      } : prev);
+      setEditedHeader({});
+      setActionMsg("✅ Cabeçalho atualizado com sucesso.");
+    } catch (e: any) {
+      console.error("Salvar cabeçalho (DatasetSP.save) erro:", e?.response || e);
+      setActionMsg(e?.response?.data?.erro || e?.message || "Falha ao atualizar cabeçalho.");
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const discardHeaderEdits = () => setEditedHeader({});
+
   return (
     <div className="space-y-4 print:p-0">
       {/* Toolbar */}
@@ -341,7 +430,7 @@ const handleCancel = async () => {
       {/* Cabeçalho */}
       <Card className="print:border-0 print:shadow-none">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Cabeçalho</CardTitle>
+          <CardTitle className="text-sm">Cabeçalho do Pedido</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-4">
           <div>
@@ -360,8 +449,63 @@ const handleCancel = async () => {
             <span className="text-xs text-slate-500">Status atual</span>
             <div>{header?.statusped ?? "—"}</div>
           </div>
+
+          {/* OBSERVAÇÃO */}
+          <div className="sm:col-span-4">
+            <label className="text-xs text-slate-600">Observação do pedido (OBSERVACAO)</label>
+            <textarea
+              className="mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none focus:ring-2"
+              rows={2}
+              value={
+                editedHeader.OBSERVACAO ??
+                (header?.observacao ?? "")
+              }
+              onChange={(e) => onHeaderChange("OBSERVACAO", e.target.value)}
+            />
+          </div>
+
+          {/* AD_INVOICE */}
+          <div>
+            <label className="text-xs text-slate-600">Nº Invoice (AD_INVOICE)</label>
+            <Input
+              value={
+                editedHeader.AD_INVOICE ??
+                (header?.ad_invoice ?? "")
+              }
+              onChange={(e)=> onHeaderChange("AD_INVOICE", e.target.value)}
+            />
+          </div>
+
+          {/* AD_PROFORMA */}
+          <div>
+            <label className="text-xs text-slate-600">Nº Proforma (AD_PROFORMA)</label>
+            <Input
+              value={
+                editedHeader.AD_PROFORMA ??
+                (header?.ad_proforma ?? "")
+              }
+              onChange={(e)=> onHeaderChange("AD_PROFORMA", e.target.value)}
+            />
+          </div>
         </CardContent>
       </Card>
+
+      {/* Banner: alterações no cabeçalho */}
+      {hasHeaderEdits && (
+        <div className="rounded-lg border bg-blue-50 border-blue-200 text-blue-900 p-3 flex items-center gap-3">
+          <div className="text-sm font-medium">
+            Há alterações no cabeçalho. Confirmar atualização?
+          </div>
+          <div className="ml-auto flex gap-2">
+            <Button size="sm" onClick={confirmHeaderSave} disabled={acting}>
+              Confirmar cabeçalho
+            </Button>
+            <Button size="sm" variant="outline" onClick={discardHeaderEdits} disabled={acting}>
+              Descartar
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Form de Follow-up (via DatasetSP.save) */}
       {showFollow && (
@@ -436,7 +580,7 @@ const handleCancel = async () => {
           <CardTitle className="text-sm">Itens pendentes</CardTitle>
         </CardHeader>
         <CardContent className="p-0 overflow-x-auto">
-          <table className="min-w-[880px] w-full text-sm">
+          <table className="min-w-[920px] w-full text-sm">
             <thead className="bg-slate-50 print:bg-white">
               <tr>
                 <th className="px-3 py-2 text-left">Seq</th>

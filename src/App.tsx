@@ -39,6 +39,7 @@ import { ResponsiveContainer, BarChart as RBarChart, Bar, XAxis, YAxis, Tooltip,
 
 // brand
 import logo from "@/assets/nx_boats.png";
+import { obterReg } from "./lib/obterReg";
 
 /* =========================
    Protected Route
@@ -161,14 +162,26 @@ function SidebarLink({
 /* =========================
    Pages (stubs prontos)
    ========================= */
+/* =========================
+   Pages (Dashboard)
+   ========================= */
 function DashboardPage() {
-  // Mock — troque por GET /api/kpis e /api/graficos
+  const { user } = useAuth();
+  const codvend = Number(user?.codvend || 0);
+
+  // KPIs mock (mantidos por ora)
   const kpis = [
     { title: "Pedidos abertos", value: 128, badge: "+12%" },
     { title: "Valor em aberto (R$)", value: "1.274.900", badge: "-3%" },
     { title: "Itens críticos", value: 37, badge: "+5" },
     { title: "Divergências", value: 9, badge: "0" },
   ];
+
+  const [statusData, setStatusData] = React.useState<Array<{ name: string; value: number }>>([]);
+  const [loadingStatus, setLoadingStatus] = React.useState(false);
+  const [errStatus, setErrStatus] = React.useState<string | null>(null);
+
+  // Gráfico “Pedidos por mês” segue mock
   const pedidosMes = [
     { mes: "Jan", pedidos: 120 },
     { mes: "Fev", pedidos: 98 },
@@ -177,12 +190,58 @@ function DashboardPage() {
     { mes: "Mai", pedidos: 180 },
     { mes: "Jun", pedidos: 160 },
   ];
-  const status = [
-    { name: "Aprovado", value: 45 },
-    { name: "Aguardando", value: 30 },
-    { name: "Atrasado", value: 25 },
-  ];
-  const pieColors = ["#16a34a", "#0ea5e9", "#ef4444"];
+
+  // Cores do pie
+  const pieColors = ["#16a34a", "#0ea5e9", "#ef4444", "#f59e0b", "#6366f1", "#22c55e", "#14b8a6", "#f97316", "#64748b"];
+
+  React.useEffect(() => {
+    if (!codvend) return;
+    (async () => {
+      setLoadingStatus(true);
+      setErrStatus(null);
+      try {
+        // OBS: usamos NVL(...,'1') para garantir status “1” quando vier null
+        const sql = `
+SELECT
+  COUNT(*) AS QTD,
+  CASE
+    WHEN NVL(PEDI.AD_STATUSPED,'1') = '1' THEN 'Pedido em aprovação'
+    WHEN NVL(PEDI.AD_STATUSPED,'1') = '2' THEN 'Em Produção'
+    WHEN NVL(PEDI.AD_STATUSPED,'1') = '3' THEN 'Aguardando embarque'
+    WHEN NVL(PEDI.AD_STATUSPED,'1') = '4' THEN 'Em Transito'
+    WHEN NVL(PEDI.AD_STATUSPED,'1') = '5' THEN 'Aguardando Liberação'
+    WHEN NVL(PEDI.AD_STATUSPED,'1') = '6' THEN 'Desembaraçado'
+    WHEN NVL(PEDI.AD_STATUSPED,'1') = '7' THEN 'Recebido'
+    WHEN NVL(PEDI.AD_STATUSPED,'1') = '8' THEN 'Perdimento/Avaria'
+    WHEN NVL(PEDI.AD_STATUSPED,'1') = '9' THEN 'Cancelado'
+    ELSE 'Pedido em aprovação'
+  END AS STATUSPED
+FROM TGFCAB PEDI
+JOIN TGFITE ITE ON ITE.NUNOTA = PEDI.NUNOTA
+JOIN TGFPAR PAR ON PAR.CODPARC = PEDI.CODPARC
+WHERE PEDI.TIPMOV = 'O'
+  AND ITE.PENDENTE = 'S'
+  AND PEDI.STATUSNOTA IN ('A','P')
+  AND PEDI.CODTIPOPER <> 4
+  AND PAR.CODVEND = ${codvend}
+GROUP BY PEDI.AD_STATUSPED
+        `.trim();
+
+        const rows = await obterReg(sql);
+        // rows: [{ QTD: number, STATUSPED: string }, ...]
+        const pie = rows.map((r: any) => ({
+          name: String(r.STATUSPED || "—"),
+          value: Number(r.QTD || 0),
+        }));
+        setStatusData(pie);
+      } catch (e: any) {
+        setErrStatus(e?.response?.data?.erro || e?.message || "Falha ao carregar status de pedidos.");
+        setStatusData([]);
+      } finally {
+        setLoadingStatus(false);
+      }
+    })();
+  }, [codvend]);
 
   return (
     <div className="space-y-6">
@@ -218,27 +277,41 @@ function DashboardPage() {
             </ResponsiveContainer>
           </CardContent>
         </Card>
+
         <Card className="shadow-sm">
           <CardHeader>
             <CardTitle className="text-sm">Status de pedidos</CardTitle>
           </CardHeader>
           <CardContent className="h-72">
+            {errStatus && <div className="text-xs text-red-600 mb-2">{errStatus}</div>}
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
-                <Pie data={status} dataKey="value" nameKey="name" innerRadius={50} outerRadius={80}>
-                  {status.map((_, i) => (
+                <Pie
+                  data={statusData}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius={50}
+                  outerRadius={80}
+                  isAnimationActive={!loadingStatus}
+                >
+                  {statusData.map((_, i) => (
                     <Cell key={i} fill={pieColors[i % pieColors.length]} />
                   ))}
                 </Pie>
                 <Tooltip />
               </PieChart>
             </ResponsiveContainer>
+            {loadingStatus && <div className="text-xs text-slate-500 mt-2">Carregando…</div>}
+            {!loadingStatus && statusData.length === 0 && (
+              <div className="text-xs text-slate-500 mt-2">Sem dados para exibir.</div>
+            )}
           </CardContent>
         </Card>
       </div>
     </div>
   );
 }
+
 //todo-- tirar pedidos page de exemplo
 // function PedidosPage() {
 //   const rows = [
